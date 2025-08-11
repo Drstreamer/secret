@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Instagram Messages Viewer</title>
+  <style>
+    :root{
+      --bg:#0b1020;--panel:#11162a;--text:#e6e8ee;--muted:#98a2b3;--me:#3b82f6;--them:#1f2937;--brand:#6ea8fe
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text)}
+    header{background:#0f1530;position:sticky;top:0;z-index:2;display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid #1d2450}
+    h1{font-size:16px;margin:0}
+    .btn{background:var(--brand);border:none;color:#05122b;padding:8px 12px;border-radius:10px;cursor:pointer;font-weight:600}
+    .btn.secondary{background:#151c34;color:#dbe4ff;border:1px solid #2a3259}
+    .wrap{display:grid;grid-template-columns:300px 1fr;min-height:calc(100vh - 54px)}
+    aside{background:var(--panel);border-right:1px solid #1c2343;padding:12px}
+    .label{font-size:12px;color:var(--muted);margin:10px 0 6px;text-transform:uppercase;letter-spacing:.12em}
+    .input,select{width:100%;background:#0f1330;color:var(--text);border:1px solid #222a54;border-radius:10px;padding:8px 10px}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .chat{padding:12px}
+    .msg{display:grid;gap:6px;margin:10px 0;max-width:780px}
+    .bubble{padding:10px 12px;border-radius:12px;white-space:pre-wrap;word-wrap:break-word}
+    .me .bubble{background:var(--me);color:#fff;border-bottom-right-radius:4px}
+    .them .bubble{background:var(--them);border-bottom-left-radius:4px}
+    .rtl .bubble{direction:rtl}
+    .ltr .bubble{direction:ltr}
+    .meta{font-size:12px;color:var(--muted)}
+    .empty{color:#94a3b8;text-align:center;padding:32px 12px}
+    mark{padding:0 2px;border-radius:4px;background:#fde047;color:#111827}
+    .warn{background:#2a1d1d;border:1px solid #6b2c2c;color:#ffd1d1;padding:8px 10px;border-radius:10px;font-size:12px;margin:8px 0;display:none}
+    .filepick{display:flex;gap:8px;align-items:center}
+    .muted{color:var(--muted);font-size:12px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>📥 Instagram Messages Viewer</h1>
+    <button id="loadMessages" class="btn">Load messages.json</button>
+    <label class="btn secondary" for="fileInput">Or pick a file…</label>
+    <input id="fileInput" type="file" accept=".json,application/json" style="display:none" />
+  </header>
+
+  <div class="wrap">
+    <aside>
+      <div id="fileWarn" class="warn">Your browser blocked reading <code>messages.json</code> when opened from the file system. Use the file picker, or serve this folder with a tiny server (e.g. <code>python -m http.server</code>), then click “Load messages.json”.</div>
+
+      <div class="label">Search</div>
+      <input id="searchText" class="input" placeholder="Search text (Arabic supported)…" />
+      <label class="muted" style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <input id="searchInSender" type="checkbox" /> include sender names
+      </label>
+
+      <div class="label">Filters</div>
+      <div class="row">
+        <select id="senderFilter"><option value="">All senders</option></select>
+        <select id="sortOrder">
+          <option value="asc">Oldest → Newest</option>
+          <option value="desc">Newest → Oldest</option>
+        </select>
+      </div>
+
+      <div class="label">Options</div>
+      <label class="muted" style="display:flex;gap:8px;align-items:center">
+        <input id="autoDecode" type="checkbox" checked /> Auto‑decode garbled Arabic
+      </label>
+      <label class="muted" style="display:flex;gap:8px;align-items:center">
+        <input id="rtlAuto" type="checkbox" checked /> Auto RTL for Arabic text
+      </label>
+    </aside>
+
+    <main id="chat" class="chat">
+      <div class="empty">Place <b>messages.json</b> next to this HTML and click <b>Load messages.json</b>.<br/>Or use the file picker.</div>
+    </main>
+  </div>
+
+  <script>
+    const $ = (sel, root=document) => root.querySelector(sel);
+    const norm = s => String(s ?? '').toLowerCase();
+
+    function fixUtf8BytesString(s){
+      try{const bytes = new Uint8Array([...String(s)].map(ch => ch.charCodeAt(0) & 0xff));
+           return new TextDecoder('utf-8',{fatal:false}).decode(bytes);}catch{return String(s)}
+    }
+    function isArabic(t){return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(t)}
+
+    // Robust parser for common IG export shapes
+    function parseMessages(text){
+      const attempts=[
+        ()=>JSON.parse(text),
+        ()=>{const o=JSON.parse(text);return Array.isArray(o)?o:o.messages||[]},
+        ()=>JSON.parse(`[${text.replace(/,\s*$/,'')}]`),
+      ];
+      for(const f of attempts){try{const obj=f();return normalize(obj)}catch{}}
+      throw new Error('Could not parse JSON');
+      function normalize(obj){
+        if(Array.isArray(obj)) return obj;
+        if(obj && Array.isArray(obj.messages)) return obj.messages;
+        if(obj && obj.sender_name) return [obj];
+        return [];
+      }
+    }
+
+    function fmtTime(ms){try{return new Date(ms).toLocaleString()}catch{return String(ms)}}
+    function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}
+    function highlight(html,q){if(!q) return html;const esc=q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');return html.replace(new RegExp(esc,'ig'),m=>`<mark>${m}</mark>`)}
+
+    function guessSelf(messages){
+      const c=new Map();
+      for(const m of messages) c.set(m.sender_name,1+(c.get(m.sender_name)||0));
+      let best=null,n=-1; for(const [k,v] of c) if(v>n){best=k;n=v} return best;
+    }
+
+    function render(messages){
+      const chat=$('#chat'); chat.innerHTML='';
+      if(!messages.length){ chat.innerHTML='<div class="empty">No messages found.</div>'; return; }
+
+      // sender dropdown
+      const senders=Array.from(new Set(messages.map(m=>m.sender_name).filter(Boolean))).sort((a,b)=>a.localeCompare(b));
+      $('#senderFilter').innerHTML = '<option value="">All senders</option>'+senders.map(s=>`<option>${escapeHtml(s)}</option>`).join('');
+
+      window.__messages = messages.map(m=>({
+        sender_name: m.sender_name || m.sender || 'Unknown',
+        timestamp_ms: Number(m.timestamp_ms || m.timestamp || m.sent_at) || Date.now(),
+        content: m.content ?? m.text ?? m.message ?? ''
+      }));
+
+      applyFilters();
+    }
+
+    function applyFilters(){
+      const chat=$('#chat');
+      const sender=$('#senderFilter').value||'';
+      const order=$('#sortOrder').value||'asc';
+      const autoDecode=$('#autoDecode').checked;
+      const rtlAuto=$('#rtlAuto').checked;
+      const q=norm($('#searchText').value);
+      const searchSender=$('#searchInSender').checked;
+
+      let list=window.__messages ? window.__messages.slice() : [];
+      if(sender) list=list.filter(m=>m.sender_name===sender);
+      list.sort((a,b)=> order==='asc' ? a.timestamp_ms-b.timestamp_ms : b.timestamp_ms-a.timestamp_ms);
+
+      chat.innerHTML='';
+      const me=guessSelf(list);
+
+      for(const m of list){
+        const raw=m.content??''; const text=autoDecode?fixUtf8BytesString(raw):String(raw);
+        if(q){ const inBody=norm(text).includes(q); const inSender=searchSender && norm(m.sender_name).includes(q); if(!inBody&&!inSender) continue; }
+        const dir=(rtlAuto && isArabic(text))?'rtl':'ltr';
+        const who=(m.sender_name===me)?'me':'them';
+        const div=document.createElement('div');
+        div.className=`msg ${who} ${dir}`;
+        div.innerHTML=`<div class="bubble">${highlight(escapeHtml(text), q)}</div><div class="meta">${escapeHtml(m.sender_name)} · ${fmtTime(m.timestamp_ms)}</div>`;
+        chat.appendChild(div);
+      }
+
+      if(!chat.children.length) chat.innerHTML='<div class="empty">No messages match your filters/search.</div>';
+    }
+
+    async function loadAdjacent(){
+      try{
+        const res = await fetch('messages.json',{cache:'no-store'});
+        if(!res.ok) throw new Error(res.status+': '+res.statusText);
+        const text=await res.text();
+        const messages=parseMessages(text);
+        render(messages);
+        $('#fileWarn').style.display='none';
+      }catch(e){
+        // Likely blocked when opened via file://
+        if(location.protocol==='file:') $('#fileWarn').style.display='block';
+        alert('Could not load messages.json: '+e.message);
+      }
+    }
+
+    // Events
+    $('#loadMessages').addEventListener('click', loadAdjacent);
+    $('#fileInput').addEventListener('change', async (e)=>{
+      const f=e.target.files&&e.target.files[0]; if(!f) return;
+      const text=await f.text();
+      try{render(parseMessages(text))}catch(err){alert('Parse error: '+err.message)}
+    });
+    for(const id of ['senderFilter','sortOrder','autoDecode','rtlAuto','searchText','searchInSender']){
+      document.getElementById(id).addEventListener(id==='searchText'?'input':'change', applyFilters);
+    }
+
+    // Try autoload on page load; if it fails (file://), the warning will show and user can use picker
+    window.addEventListener('load', ()=>{
+      // only attempt if not already loaded
+      loadAdjacent();
+    });
+  </script>
+</body>
+</html>
